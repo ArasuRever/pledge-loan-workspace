@@ -1,0 +1,239 @@
+branches table -- Table: public.branches
+
+-- DROP TABLE IF EXISTS public.branches;
+
+CREATE TABLE IF NOT EXISTS public.branches
+(
+    id integer NOT NULL DEFAULT nextval('branches_id_seq'::regclass),
+    branch_name character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    branch_code character varying(50) COLLATE pg_catalog."default" NOT NULL,
+    address text COLLATE pg_catalog."default",
+    phone_number character varying(20) COLLATE pg_catalog."default",
+    is_active boolean DEFAULT true,
+    created_at timestamp without time zone DEFAULT now(),
+    license_number character varying(100) COLLATE pg_catalog."default",
+    CONSTRAINT branches_pkey PRIMARY KEY (id),
+    CONSTRAINT branches_branch_code_key UNIQUE (branch_code),
+    CONSTRAINT branches_branch_name_key UNIQUE (branch_name)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.branches
+    OWNER to postgres;          buisness_settings table -- Table: public.business_settings
+
+-- DROP TABLE IF EXISTS public.business_settings;
+
+CREATE TABLE IF NOT EXISTS public.business_settings
+(
+    id integer NOT NULL DEFAULT nextval('business_settings_id_seq'::regclass),
+    business_name character varying(255) COLLATE pg_catalog."default" DEFAULT 'Sri KuberaLakshmi Bankers'::character varying,
+    address text COLLATE pg_catalog."default",
+    phone_number character varying(20) COLLATE pg_catalog."default",
+    license_number character varying(100) COLLATE pg_catalog."default",
+    logo_url text COLLATE pg_catalog."default",
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    navbar_display_mode character varying(20) COLLATE pg_catalog."default" DEFAULT 'both'::character varying,
+    CONSTRAINT business_settings_pkey PRIMARY KEY (id)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.business_settings
+    OWNER to postgres;  customer_phones -- Table: public.customer_phones
+
+-- DROP TABLE IF EXISTS public.customer_phones;
+
+CREATE TABLE IF NOT EXISTS public.customer_phones
+(
+    id integer NOT NULL DEFAULT nextval('customer_phones_id_seq'::regclass),
+    customer_id integer,
+    phone_number character varying(20) COLLATE pg_catalog."default" NOT NULL,
+    is_primary boolean DEFAULT false,
+    CONSTRAINT customer_phones_pkey PRIMARY KEY (id),
+    CONSTRAINT customer_phones_customer_id_fkey FOREIGN KEY (customer_id)
+        REFERENCES public.customers (id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE CASCADE
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.customer_phones
+    OWNER to postgres;  customers table -- Table: public.customers
+
+-- DROP TABLE IF EXISTS public.customers;
+
+CREATE TABLE IF NOT EXISTS public.customers
+(
+    id integer NOT NULL DEFAULT nextval('customers_id_seq'::regclass),
+    first_name character varying(100) COLLATE pg_catalog."default" NOT NULL,
+    last_name character varying(100) COLLATE pg_catalog."default" NOT NULL,
+    address_line_1 character varying(255) COLLATE pg_catalog."default",
+    address_line_2 character varying(255) COLLATE pg_catalog."default",
+    city character varying(100) COLLATE pg_catalog."default",
+    is_deleted boolean DEFAULT false,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT customers_pkey PRIMARY KEY (id)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.customers
+    OWNER to postgres; loan_history table -- Table: public.loan_history
+
+-- DROP TABLE IF EXISTS public.loan_history;
+
+CREATE TABLE IF NOT EXISTS public.loan_history
+(
+    id integer NOT NULL DEFAULT nextval('loan_history_id_seq'::regclass),
+    loan_id integer NOT NULL,
+    field_changed character varying(100) COLLATE pg_catalog."default" NOT NULL,
+    old_value text COLLATE pg_catalog."default",
+    new_value text COLLATE pg_catalog."default",
+    changed_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    changed_by_username character varying(100) COLLATE pg_catalog."default",
+    CONSTRAINT loan_history_pkey PRIMARY KEY (id)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.loan_history
+    OWNER to postgres;
+-- Index: idx_loan_history_loan_id
+
+-- DROP INDEX IF EXISTS public.idx_loan_history_loan_id;
+
+CREATE INDEX IF NOT EXISTS idx_loan_history_loan_id
+    ON public.loan_history USING btree
+    (loan_id ASC NULLS LAST)
+    WITH (fillfactor=100, deduplicate_items=True)
+    TABLESPACE pg_default; loans table -- Table: public.loans
+
+-- DROP TABLE IF EXISTS public.loans;
+
+CREATE TABLE IF NOT EXISTS public.loans
+(
+    id integer NOT NULL DEFAULT nextval('loans_id_seq'::regclass),
+    customer_id integer,
+    principal_amount numeric(12,2) NOT NULL,
+    interest_rate numeric(5,2) NOT NULL,
+    loan_date date NOT NULL DEFAULT CURRENT_DATE,
+    status character varying(20) COLLATE pg_catalog."default" DEFAULT 'ACTIVE'::character varying,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT loans_pkey PRIMARY KEY (id),
+    CONSTRAINT loans_customer_id_fkey FOREIGN KEY (customer_id)
+        REFERENCES public.customers (id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE RESTRICT
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.loans
+    OWNER to postgres; pledged_items table -- Table: public.pledged_items
+
+-- DROP TABLE IF EXISTS public.pledged_items;
+
+CREATE TABLE IF NOT EXISTS public.pledged_items
+(
+    id integer NOT NULL DEFAULT nextval('pledged_items_id_seq'::regclass),
+    loan_id integer,
+    barcode character varying(50) COLLATE pg_catalog."default" NOT NULL,
+    metal_type character varying(20) COLLATE pg_catalog."default" NOT NULL,
+    item_name character varying(100) COLLATE pg_catalog."default" NOT NULL,
+    gross_weight_grams numeric(8,3) NOT NULL,
+    net_weight_grams numeric(8,3) NOT NULL,
+    is_redeemed boolean DEFAULT false,
+    CONSTRAINT pledged_items_pkey PRIMARY KEY (id),
+    CONSTRAINT pledged_items_barcode_key UNIQUE (barcode),
+    CONSTRAINT pledged_items_loan_id_fkey FOREIGN KEY (loan_id)
+        REFERENCES public.loans (id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE CASCADE
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.pledged_items
+    OWNER to postgres; pledgeditems table -- Table: public.pledgeditems
+
+-- DROP TABLE IF EXISTS public.pledgeditems;
+
+CREATE TABLE IF NOT EXISTS public.pledgeditems
+(
+    id integer NOT NULL DEFAULT nextval('pledgeditems_id_seq'::regclass),
+    loan_id integer NOT NULL,
+    item_type character varying(50) COLLATE pg_catalog."default" NOT NULL,
+    description text COLLATE pg_catalog."default" NOT NULL,
+    quality character varying(100) COLLATE pg_catalog."default",
+    weight numeric(10,3),
+    item_image_data bytea,
+    gross_weight numeric(10,3),
+    net_weight numeric(10,3),
+    purity character varying(50) COLLATE pg_catalog."default",
+    CONSTRAINT pledgeditems_pkey PRIMARY KEY (id),
+    CONSTRAINT pledgeditems_loan_id_key UNIQUE (loan_id)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.pledgeditems
+    OWNER to postgres; transactions table -- Table: public.transactions
+
+-- DROP TABLE IF EXISTS public.transactions;
+
+CREATE TABLE IF NOT EXISTS public.transactions
+(
+    id integer NOT NULL DEFAULT nextval('transactions_id_seq'::regclass),
+    loan_id integer NOT NULL,
+    amount_paid numeric(12,2) NOT NULL,
+    payment_type character varying(50) COLLATE pg_catalog."default" NOT NULL,
+    payment_date timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    changed_by_username text COLLATE pg_catalog."default",
+    branch_id integer,
+    CONSTRAINT transactions_pkey PRIMARY KEY (id),
+    CONSTRAINT transactions_branch_id_fkey FOREIGN KEY (branch_id)
+        REFERENCES public.branches (id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.transactions
+    OWNER to postgres;
+-- Index: idx_transactions_loan_id
+
+-- DROP INDEX IF EXISTS public.idx_transactions_loan_id;
+
+CREATE INDEX IF NOT EXISTS idx_transactions_loan_id
+    ON public.transactions USING btree
+    (loan_id ASC NULLS LAST)
+    WITH (fillfactor=100, deduplicate_items=True)
+    TABLESPACE pg_default; users table -- Table: public.users
+
+-- DROP TABLE IF EXISTS public.users;
+
+CREATE TABLE IF NOT EXISTS public.users
+(
+    id integer NOT NULL DEFAULT nextval('users_id_seq'::regclass),
+    username character varying(100) COLLATE pg_catalog."default" NOT NULL,
+    password character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    role character varying(20) COLLATE pg_catalog."default" NOT NULL DEFAULT 'staff'::character varying,
+    branch_id integer,
+    CONSTRAINT users_pkey PRIMARY KEY (id),
+    CONSTRAINT users_username_key UNIQUE (username),
+    CONSTRAINT users_branch_id_fkey FOREIGN KEY (branch_id)
+        REFERENCES public.branches (id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.users
+    OWNER to postgres;
