@@ -3,68 +3,114 @@ const { getTargetBranchId } = require('../middleware/auth.middleware');
 const { getScopedLoanQuery, calculateLoanFinancials } = require('../utils/calculation.engine');
 const { bufferToDataUrl } = require('../utils/image.utils');
 
+// --- 1. LIST ALL LOANS (Latest Created & Latest Closed in Order) ---
 const listLoans = async (req, res) => {
   try {
     const targetBranch = getTargetBranchId(req);
     if (targetBranch) {
-      await db.query("UPDATE Loans SET status = 'overdue' WHERE due_date < NOW() AND status = 'active' AND branch_id = $1", [targetBranch]);
+      await db.query("UPDATE Loans SET status = 'overdue' WHERE due_date < NOW() AND LOWER(status) = 'active' AND branch_id = $1", [targetBranch]).catch(() => {});
     } else {
-      await db.query("UPDATE Loans SET status = 'overdue' WHERE due_date < NOW() AND status = 'active'");
+      await db.query("UPDATE Loans SET status = 'overdue' WHERE due_date < NOW() AND LOWER(status) = 'active'").catch(() => {});
     }
 
     let query = `
-      SELECT l.id, l.book_loan_number, l.principal_amount, l.pledge_date, l.due_date, l.status, 
-             c.name AS customer_name, c.phone_number, b.branch_name 
+      SELECT 
+        l.id, 
+        l.book_loan_number, 
+        COALESCE(
+          NULLIF(l.principal_amount, 0),
+          (SELECT SUM(t.amount_paid) FROM Transactions t WHERE t.loan_id = l.id AND t.payment_type IN ('principal', 'settlement')),
+          (SELECT t.amount_paid FROM Transactions t WHERE t.loan_id = l.id AND t.payment_type = 'disbursement' ORDER BY t.payment_date ASC LIMIT 1),
+          l.principal_amount
+        ) AS principal_amount,
+        l.interest_rate,
+        l.pledge_date, 
+        l.due_date, 
+        l.closed_date,
+        l.status, 
+        l.created_at,
+        c.name AS customer_name, 
+        c.phone_number, 
+        b.branch_name 
       FROM Loans l 
       JOIN Customers c ON l.customer_id = c.id 
       LEFT JOIN Branches b ON l.branch_id = b.id 
-      WHERE l.status IN ('active', 'overdue', 'paid', 'forfeited') AND c.is_deleted = false
+      WHERE LOWER(l.status) IN ('active', 'overdue', 'paid', 'forfeited') AND COALESCE(c.is_deleted, false) = false
     `;
     const params = [];
     if (targetBranch) {
-      query += ` AND l.branch_id = $1`;
+      query += ` AND (l.branch_id = $1 OR l.branch_id IS NULL)`;
       params.push(targetBranch);
     }
-    query += ` ORDER BY l.pledge_date DESC`;
+    query += ` ORDER BY 
+      CASE 
+        WHEN LOWER(l.status) IN ('paid', 'forfeited') THEN COALESCE(l.closed_date, l.created_at)
+        ELSE COALESCE(l.pledge_date, l.created_at)
+      END DESC, 
+      l.id DESC`;
 
     const allLoans = await db.query(query, params);
     res.json(allLoans.rows);
   } catch (err) {
-    res.status(500).send("Error");
+    console.error("List Loans Error:", err);
+    res.status(500).json({ error: err.message });
   }
 };
 
+// --- 2. RECENTLY CREATED (Strict Latest Order) ---
 const getRecentCreated = async (req, res) => {
   try {
     let base = `
-      SELECT l.id, l.principal_amount, c.name AS customer_name 
+      SELECT 
+        l.id, 
+        l.book_loan_number,
+        COALESCE(
+          NULLIF(l.principal_amount, 0),
+          (SELECT t.amount_paid FROM Transactions t WHERE t.loan_id = l.id AND t.payment_type = 'disbursement' ORDER BY t.payment_date ASC LIMIT 1),
+          l.principal_amount
+        ) AS principal_amount, 
+        c.name AS customer_name,
+        COALESCE(l.pledge_date, l.created_at) AS event_date
       FROM Loans l 
       LEFT JOIN Customers c ON l.customer_id = c.id 
-      WHERE l.status != 'deleted' AND c.is_deleted = false
+      WHERE LOWER(l.status) != 'deleted' AND COALESCE(c.is_deleted, false) = false
     `;
     const { q, params } = getScopedLoanQuery(base, req);
-    const finalQ = q + ` ORDER BY l.created_at DESC LIMIT 5`;
+    const finalQ = q + ` ORDER BY COALESCE(l.pledge_date, l.created_at) DESC, l.id DESC LIMIT 5`;
     const result = await db.query(finalQ, params);
     res.json(result.rows);
   } catch (err) {
-    res.status(500).send("Server Error");
+    console.error("❌ Recent Created Error:", err);
+    res.status(500).json({ error: err.message, detail: err.detail });
   }
 };
 
+// --- 3. RECENTLY CLOSED (Strict Latest Closed Order + Settled Value) ---
 const getRecentClosed = async (req, res) => {
   try {
     let base = `
-      SELECT l.id, l.principal_amount, c.name AS customer_name 
+      SELECT 
+        l.id, 
+        l.book_loan_number,
+        COALESCE(
+          NULLIF(l.principal_amount, 0),
+          (SELECT SUM(t.amount_paid) FROM Transactions t WHERE t.loan_id = l.id AND t.payment_type IN ('principal', 'settlement')),
+          (SELECT t.amount_paid FROM Transactions t WHERE t.loan_id = l.id AND t.payment_type = 'disbursement' ORDER BY t.payment_date ASC LIMIT 1),
+          l.principal_amount
+        ) AS principal_amount, 
+        c.name AS customer_name,
+        COALESCE(l.closed_date, l.created_at) AS event_date
       FROM Loans l 
       LEFT JOIN Customers c ON l.customer_id = c.id 
-      WHERE l.status = 'paid' AND c.is_deleted = false
+      WHERE LOWER(l.status) = 'paid' AND COALESCE(c.is_deleted, false) = false
     `;
     const { q, params } = getScopedLoanQuery(base, req);
-    const finalQ = q + ` ORDER BY l.created_at DESC LIMIT 5`;
+    const finalQ = q + ` ORDER BY COALESCE(l.closed_date, l.created_at) DESC, l.id DESC LIMIT 5`;
     const result = await db.query(finalQ, params);
     res.json(result.rows);
   } catch (err) {
-    res.status(500).send("Server Error");
+    console.error("❌ Recent Closed Error:", err);
+    res.status(500).json({ error: err.message, detail: err.detail });
   }
 };
 
@@ -97,17 +143,22 @@ const findByBookNumber = async (req, res) => {
   try {
     const { bookNumber } = req.params;
     const targetBranch = getTargetBranchId(req);
-    let query = "SELECT id FROM Loans WHERE book_loan_number = $1 AND status != 'deleted'";
-    let params = [bookNumber];
+    let query = `
+      SELECT l.id, l.book_loan_number, l.status, c.name as customer_name 
+      FROM Loans l 
+      LEFT JOIN Customers c ON l.customer_id = c.id 
+      WHERE LOWER(TRIM(l.book_loan_number)) = LOWER(TRIM($1)) AND LOWER(l.status) != 'deleted'
+    `;
+    let params = [bookNumber.trim()];
     if (targetBranch) {
-      query += " AND branch_id = $2";
+      query += " AND l.branch_id = $2";
       params.push(targetBranch);
     }
     const result = await db.query(query, params);
-    if (result.rows.length === 0) return res.status(404).json({ error: "No loan found." });
-    res.json({ loanId: result.rows[0].id });
+    if (result.rows.length === 0) return res.status(404).json({ exists: false });
+    res.json({ exists: true, loan: result.rows[0] });
   } catch (err) {
-    res.status(500).send("Server Error");
+    res.status(500).json({ error: err.message });
   }
 };
 
@@ -146,10 +197,31 @@ const getLoanById = async (req, res) => {
 
     const financials = calculateLoanFinancials(loanDetails, transactionsResult.rows);
 
+    // Fetch all multi-item articles for this loan
+    const itemsRes = await db.query(
+      "SELECT id, item_type, description, quality, gross_weight, net_weight, purity, item_image_data FROM PledgedItems WHERE loan_id = $1 ORDER BY id ASC",
+      [id]
+    );
+    loanDetails.items = itemsRes.rows.map(item => {
+      if (item.item_image_data) {
+        item.item_image_data_url = bufferToDataUrl(item.item_image_data);
+        delete item.item_image_data;
+      }
+      return item;
+    });
+
+    if (loanDetails.items.length > 0) {
+      if (!loanDetails.item_image_data && loanDetails.items[0].item_image_data_url) {
+        loanDetails.item_image_data_url = loanDetails.items[0].item_image_data_url;
+      }
+      loanDetails.gross_weight = loanDetails.items.reduce((s, i) => s + parseFloat(i.gross_weight || 0), 0);
+      loanDetails.net_weight = loanDetails.items.reduce((s, i) => s + parseFloat(i.net_weight || 0), 0);
+    }
+
     if (loanDetails.item_image_data) {
       loanDetails.item_image_data_url = bufferToDataUrl(loanDetails.item_image_data);
+      delete loanDetails.item_image_data;
     }
-    delete loanDetails.item_image_data;
 
     if (loanDetails.customer_image_url) {
       loanDetails.customer_image_url = bufferToDataUrl(loanDetails.customer_image_url);
@@ -162,44 +234,68 @@ const getLoanById = async (req, res) => {
       calculated: financials
     });
   } catch (err) {
-    res.status(500).send("Error");
+    console.error("Get Loan Details Error:", err);
+    res.status(500).json({ error: err.message });
   }
 };
 
 const createLoan = async (req, res) => {
   const client = await db.pool.connect();
   const username = req.user.username;
+
   try {
     const {
       customer_id,
       principal_amount,
       interest_rate,
       book_loan_number,
+      appraised_value,
+      deductFirstMonthInterest,
       item_type,
       description,
       quality,
       gross_weight,
       net_weight,
-      purity,
-      appraised_value,
-      deductFirstMonthInterest
+      purity
     } = req.body;
 
-    const itemImageBuffer = req.file ? req.file.buffer : null;
     const principal = parseFloat(principal_amount);
     const rate = parseFloat(interest_rate);
 
-    if (!customer_id || isNaN(principal) || principal <= 0 || isNaN(rate) || rate <= 0 || !book_loan_number || !item_type || !description) {
-      return res.status(400).send("Missing fields.");
+    if (!customer_id || isNaN(principal) || principal <= 0 || isNaN(rate) || rate <= 0 || !book_loan_number) {
+      return res.status(400).json({ error: "Missing required loan fields." });
     }
 
     const customerCheck = await client.query("SELECT branch_id, is_deleted FROM Customers WHERE id = $1", [customer_id]);
     if (customerCheck.rows.length === 0 || customerCheck.rows[0].is_deleted) {
-      return res.status(404).send("Customer not found.");
+      return res.status(404).json({ error: "Customer not found." });
     }
     const custBranch = customerCheck.rows[0].branch_id;
     if (req.user.role !== 'admin' && custBranch !== req.user.branchId) {
       return res.status(403).json({ error: "Access Denied." });
+    }
+
+    // Parse multi-item array
+    let itemsList = [];
+    if (req.body.items) {
+      try {
+        itemsList = typeof req.body.items === 'string' ? JSON.parse(req.body.items) : req.body.items;
+      } catch (e) {
+        itemsList = [];
+      }
+    }
+
+    if (!Array.isArray(itemsList) || itemsList.length === 0) {
+      const finalGross = parseFloat(gross_weight || req.body.weight || 0);
+      const finalNet = parseFloat(net_weight || finalGross);
+      itemsList = [{
+        item_type: item_type || 'Gold',
+        description: description || '',
+        quality: quality || purity || 'Good',
+        gross_weight: finalGross,
+        net_weight: finalNet,
+        purity: purity || '22K (916)'
+      }];
     }
 
     await client.query('BEGIN');
@@ -207,15 +303,43 @@ const createLoan = async (req, res) => {
       INSERT INTO Loans (customer_id, principal_amount, interest_rate, book_loan_number, appraised_value, branch_id) 
       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
     `;
-    const loanResult = await client.query(loanQuery, [customer_id, principal, rate, book_loan_number, appraised_value || 0, custBranch]);
+    const loanResult = await client.query(loanQuery, [customer_id, principal, rate, book_loan_number, appraised_value || principal, custBranch]);
     const newLoanId = loanResult.rows[0].id;
 
-    const finalGrossWeight = gross_weight || req.body.weight;
-    const itemQuery = `
-      INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_image_data) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    `;
-    await client.query(itemQuery, [newLoanId, item_type, description, quality, finalGrossWeight, finalGrossWeight, net_weight, purity, itemImageBuffer]);
+    // Helper to find photo buffer per item
+    const getPhotoBufferForItem = (idx) => {
+      if (!req.files || !Array.isArray(req.files)) return null;
+      const match = req.files.find(f => f.fieldname === `itemPhoto_${idx}`);
+      if (match) return match.buffer;
+      if (idx === 0) {
+        const legacy = req.files.find(f => f.fieldname === 'itemPhoto');
+        if (legacy) return legacy.buffer;
+      }
+      return null;
+    };
+
+    for (let i = 0; i < itemsList.length; i++) {
+      const it = itemsList[i];
+      const gWt = parseFloat(it.gross_weight || 0);
+      const nWt = parseFloat(it.net_weight || gWt);
+      const itBuffer = getPhotoBufferForItem(i);
+
+      const itemQuery = `
+        INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_image_data) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `;
+      await client.query(itemQuery, [
+        newLoanId,
+        it.item_type || 'Gold',
+        it.description || '',
+        it.quality || it.purity || 'Good',
+        gWt,
+        gWt,
+        nWt,
+        it.purity || '22K (916)',
+        itBuffer
+      ]);
+    }
 
     if (deductFirstMonthInterest === 'true') {
       const firstMonthInterest = principal * (rate / 100);
@@ -231,8 +355,9 @@ const createLoan = async (req, res) => {
     res.status(201).json({ message: "Loan created", loanId: newLoanId });
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error("❌ Create Loan Error:", err);
     if (err.code === '23505') return res.status(400).json({ error: "Book Loan Number already exists." });
-    res.status(500).send("Error");
+    res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }
@@ -432,19 +557,29 @@ const renewLoan = async (req, res) => {
   const username = req.user.username;
   try {
     const oldLoanId = parseInt(req.params.id, 10);
-    const { newBookLoanNumber, interestPaid, principalPaid, newInterestRate, newPrincipal, deductFirstMonthInterest } = req.body;
+    const { 
+      newBookLoanNumber, 
+      interestPaid, 
+      principalPaid, 
+      topUpAmount, 
+      newInterestRate, 
+      newPrincipal, 
+      deductFirstMonthInterest 
+    } = req.body;
 
     const intPaid = parseFloat(interestPaid) || 0;
     const prinPaid = parseFloat(principalPaid) || 0;
+    const topUp = parseFloat(topUpAmount) || 0;
     const finalNewPrincipal = parseFloat(newPrincipal);
     const newRate = parseFloat(newInterestRate);
 
-    if (!newBookLoanNumber || isNaN(finalNewPrincipal) || isNaN(newRate)) {
-      return res.status(400).json({ error: "Invalid renewal data." });
+    if (!newBookLoanNumber || isNaN(finalNewPrincipal) || isNaN(newRate) || finalNewPrincipal <= 0) {
+      return res.status(400).json({ error: "Invalid renewal data: Valid Book Number, Principal and Rate required." });
     }
 
     await client.query('BEGIN');
 
+    // 1. Fetch Old Loan & Items
     const oldLoanRes = await client.query("SELECT * FROM Loans WHERE id = $1 FOR UPDATE", [oldLoanId]);
     if (oldLoanRes.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -458,31 +593,56 @@ const renewLoan = async (req, res) => {
     }
     if (oldLoan.status !== 'active' && oldLoan.status !== 'overdue') {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: "Loan must be active/overdue to renew." });
+      return res.status(400).json({ error: "Loan must be active or overdue to renew." });
     }
 
+    // Check if new book loan number already exists
+    const checkBook = await client.query("SELECT id FROM Loans WHERE LOWER(TRIM(book_loan_number)) = LOWER(TRIM($1)) AND LOWER(status) != 'deleted'", [newBookLoanNumber.trim()]);
+    if (checkBook.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `Book Loan Number "${newBookLoanNumber}" already exists.` });
+    }
+
+    // 2. Log Payments on Old Loan
     if (intPaid > 0) {
-      await client.query("INSERT INTO Transactions (loan_id, amount_paid, payment_type, payment_date, changed_by_username) VALUES ($1, $2, 'interest', NOW(), $3)", [oldLoanId, intPaid, username]);
+      await client.query(
+        "INSERT INTO Transactions (loan_id, amount_paid, payment_type, payment_date, changed_by_username) VALUES ($1, $2, 'interest', NOW(), $3)",
+        [oldLoanId, intPaid, username]
+      );
     }
     if (prinPaid > 0) {
-      await client.query("INSERT INTO Transactions (loan_id, amount_paid, payment_type, payment_date, changed_by_username) VALUES ($1, $2, 'principal', NOW(), $3)", [oldLoanId, prinPaid, username]);
-      const reducedPrincipal = parseFloat(oldLoan.principal_amount) - prinPaid;
+      await client.query(
+        "INSERT INTO Transactions (loan_id, amount_paid, payment_type, payment_date, changed_by_username) VALUES ($1, $2, 'principal', NOW(), $3)",
+        [oldLoanId, prinPaid, username]
+      );
+      const reducedPrincipal = Math.max(0, parseFloat(oldLoan.principal_amount) - prinPaid);
       await client.query("UPDATE Loans SET principal_amount = $1 WHERE id = $2", [reducedPrincipal, oldLoanId]);
     }
 
-    await client.query("UPDATE Loans SET status = 'paid', closed_date = NOW() WHERE id = $1", [oldLoanId]);
-    await client.query("INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) VALUES ($1, 'status', 'renewed', $2, $3)", [oldLoanId, `Renewed to ${newBookLoanNumber}`, username]);
+    // 3. Close Old Loan
+    await client.query("UPDATE Loans SET status = 'paid', closed_date = NOW(), principal_amount = 0 WHERE id = $1", [oldLoanId]);
+    await client.query(
+      "INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) VALUES ($1, 'status', 'renewed', $2, $3)",
+      [oldLoanId, `Renewed to ${newBookLoanNumber}`, username]
+    );
 
+    // 4. Create New Loan
     const newLoanRes = await client.query(
       `INSERT INTO Loans (customer_id, principal_amount, interest_rate, book_loan_number, pledge_date, due_date, status, branch_id, appraised_value) 
        VALUES ($1, $2, $3, $4, NOW(), NOW() + INTERVAL '1 year', 'active', $5, $6) RETURNING id`,
-      [oldLoan.customer_id, finalNewPrincipal, newRate, newBookLoanNumber, oldLoan.branch_id, oldLoan.appraised_value]
+      [oldLoan.customer_id, finalNewPrincipal, newRate, newBookLoanNumber.trim(), oldLoan.branch_id, oldLoan.appraised_value]
     );
     const newLoanId = newLoanRes.rows[0].id;
 
-    const itemRes = await client.query("SELECT * FROM PledgedItems WHERE loan_id = $1", [oldLoanId]);
-    if (itemRes.rows.length > 0) {
-      const item = itemRes.rows[0];
+    // Record disbursement / initial loan creation transaction
+    await client.query(
+      "INSERT INTO Transactions (loan_id, amount_paid, payment_type, payment_date, changed_by_username) VALUES ($1, $2, 'disbursement', NOW(), $3)",
+      [newLoanId, finalNewPrincipal, username]
+    );
+
+    // 5. Copy ALL Pledged Items to the New Loan (Multi-item support)
+    const itemsRes = await client.query("SELECT * FROM PledgedItems WHERE loan_id = $1 ORDER BY id ASC", [oldLoanId]);
+    for (const item of itemsRes.rows) {
       await client.query(
         `INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_image_data) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -490,6 +650,7 @@ const renewLoan = async (req, res) => {
       );
     }
 
+    // 6. Handle First Month Interest Deduction (New Loan)
     if (deductFirstMonthInterest === true || deductFirstMonthInterest === 'true') {
       const firstMonthInt = finalNewPrincipal * (newRate / 100);
       if (firstMonthInt > 0) {
@@ -501,12 +662,11 @@ const renewLoan = async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json({ message: "Loan Renewed Successfully!", newLoanId: newLoanId });
+    res.json({ message: "Loan renewed successfully", newLoanId });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
-    if (err.code === '23505') return res.status(400).json({ error: "New Book Loan Number already exists." });
-    res.status(500).json({ error: "Renewal failed." });
+    console.error("❌ Renew Loan Error:", err);
+    res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }
