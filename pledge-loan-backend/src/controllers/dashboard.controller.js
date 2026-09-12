@@ -21,7 +21,7 @@ const getDashboardStats = async (req, res) => {
       console.warn("Notice: Auto-update overdue skipped:", updateErr.message);
     }
 
-    // Top Level Metrics (Strictly 1 count/sum per loan)
+    // Top Level Metrics (Strictly 1 count/sum per unique loan)
     const [pRes, aRes, oRes, cRes, lRes, pdRes, fRes, dRes] = await Promise.all([
       db.query(`SELECT COALESCE(SUM(principal_amount), 0) as sum FROM Loans ${wc} AND (LOWER(status)='active' OR LOWER(status)='overdue')`, p),
       db.query(`SELECT COUNT(*) as count FROM Loans ${wc} AND (LOWER(status)='active' OR LOWER(status)='overdue')`, p),
@@ -53,7 +53,7 @@ const getDashboardStats = async (req, res) => {
     if (lR.rows.length > 0) {
       const ids = lR.rows.map(l => l.id);
       const [itemsRes, txsRes] = await Promise.all([
-        db.query(`SELECT loan_id, item_type, description, gross_weight, net_weight FROM PledgedItems WHERE loan_id = ANY($1::int[])`, [ids]),
+        db.query(`SELECT loan_id, item_type, description, gross_weight, net_weight, COALESCE(item_value, 0) AS item_value FROM PledgedItems WHERE loan_id = ANY($1::int[])`, [ids]),
         db.query(`SELECT * FROM Transactions WHERE loan_id = ANY($1::int[])`, [ids])
       ]);
       allItems = itemsRes.rows;
@@ -98,46 +98,60 @@ const getDashboardStats = async (req, res) => {
         metalBreakdown.Other.totalNetWeight += parseFloat(a.net_weight || a.gross_weight || 0);
       });
 
-      const hasGold = goldArticles.length > 0;
-      const hasSilver = silverArticles.length > 0;
-      const hasOther = otherArticles.length > 0;
+      // Calculate exact principal allocation from user-entered item values
+      const goldItemVal = goldArticles.reduce((s, i) => s + parseFloat(i.item_value || 0), 0);
+      const silverItemVal = silverArticles.reduce((s, i) => s + parseFloat(i.item_value || 0), 0);
+      const otherItemVal = otherArticles.reduce((s, i) => s + parseFloat(i.item_value || 0), 0);
+      const totalItemVal = goldItemVal + silverItemVal + otherItemVal;
 
-      if (hasGold && !hasSilver && !hasOther) {
-        // Pure Gold Loan
-        metalBreakdown.Gold.loanCount += 1;
-        metalBreakdown.Gold.totalPrincipal += principal;
-        metalBreakdown.Gold.totalInterest += interest;
-      } else if (hasSilver && !hasGold && !hasOther) {
-        // Pure Silver Loan
-        metalBreakdown.Silver.loanCount += 1;
-        metalBreakdown.Silver.totalPrincipal += principal;
-        metalBreakdown.Silver.totalInterest += interest;
-      } else if (hasGold && hasSilver) {
-        // Mixed Gold & Silver Loan
-        metalBreakdown.Gold.loanCount += 1;
-        metalBreakdown.Silver.loanCount += 1;
+      let goldPrincipalShare = 0;
+      let silverPrincipalShare = 0;
+      let otherPrincipalShare = 0;
 
-        const goldWeight = goldArticles.reduce((s, i) => s + parseFloat(i.net_weight || i.gross_weight || 0), 0);
-        const silverWeight = silverArticles.reduce((s, i) => s + parseFloat(i.net_weight || i.gross_weight || 0), 0);
-
-        // Proportional valuation split (reflecting gold-to-silver value density)
-        const goldEstVal = goldWeight * 6500;
-        const silverEstVal = silverWeight * 90;
-        const totalEstVal = (goldEstVal + silverEstVal) || 1;
-
-        const goldShare = goldEstVal / totalEstVal;
-        const silverShare = silverEstVal / totalEstVal;
-
-        metalBreakdown.Gold.totalPrincipal += (principal * goldShare);
-        metalBreakdown.Gold.totalInterest += (interest * goldShare);
-
-        metalBreakdown.Silver.totalPrincipal += (principal * silverShare);
-        metalBreakdown.Silver.totalInterest += (interest * silverShare);
+      if (totalItemVal > 0) {
+        // EXACT SPLIT: Uses the exact item amounts entered by the user
+        goldPrincipalShare = principal * (goldItemVal / totalItemVal);
+        silverPrincipalShare = principal * (silverItemVal / totalItemVal);
+        otherPrincipalShare = principal * (otherItemVal / totalItemVal);
       } else {
-        metalBreakdown.Other.loanCount += 1;
-        metalBreakdown.Other.totalPrincipal += principal;
-        metalBreakdown.Other.totalInterest += interest;
+        // Fallback for legacy single-item loans where item_value was not recorded
+        const hasGold = goldArticles.length > 0;
+        const hasSilver = silverArticles.length > 0;
+        const hasOther = otherArticles.length > 0;
+
+        if (hasGold && !hasSilver && !hasOther) {
+          goldPrincipalShare = principal;
+        } else if (hasSilver && !hasGold && !hasOther) {
+          silverPrincipalShare = principal;
+        } else if (hasOther && !hasGold && !hasSilver) {
+          otherPrincipalShare = principal;
+        } else {
+          // Mixed legacy fallback
+          const gWt = goldArticles.reduce((s, i) => s + parseFloat(i.net_weight || i.gross_weight || 0), 0);
+          const sWt = silverArticles.reduce((s, i) => s + parseFloat(i.net_weight || i.gross_weight || 0), 0);
+          const gEst = gWt * 6500;
+          const sEst = sWt * 90;
+          const totEst = (gEst + sEst) || 1;
+          goldPrincipalShare = principal * (gEst / totEst);
+          silverPrincipalShare = principal * (sEst / totEst);
+        }
       }
+
+      metalBreakdown.Gold.totalPrincipal += goldPrincipalShare;
+      metalBreakdown.Silver.totalPrincipal += silverPrincipalShare;
+      metalBreakdown.Other.totalPrincipal += otherPrincipalShare;
+
+      // Allocate interest in proportion to the exact principal share
+      if (principal > 0) {
+        metalBreakdown.Gold.totalInterest += interest * (goldPrincipalShare / principal);
+        metalBreakdown.Silver.totalInterest += interest * (silverPrincipalShare / principal);
+        metalBreakdown.Other.totalInterest += interest * (otherPrincipalShare / principal);
+      }
+
+      // Count active loans in each portfolio
+      if (goldArticles.length > 0) metalBreakdown.Gold.loanCount += 1;
+      if (silverArticles.length > 0) metalBreakdown.Silver.loanCount += 1;
+      if (otherArticles.length > 0) metalBreakdown.Other.loanCount += 1;
     }
 
     res.json({

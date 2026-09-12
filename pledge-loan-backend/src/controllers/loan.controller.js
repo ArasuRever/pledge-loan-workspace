@@ -199,7 +199,7 @@ const getLoanById = async (req, res) => {
 
     // Fetch all multi-item articles for this loan
     const itemsRes = await db.query(
-      "SELECT id, item_type, description, quality, gross_weight, net_weight, purity, item_image_data FROM PledgedItems WHERE loan_id = $1 ORDER BY id ASC",
+      "SELECT id, item_type, description, quality, gross_weight, net_weight, purity, COALESCE(item_value, 0) AS item_value, item_image_data FROM PledgedItems WHERE loan_id = $1 ORDER BY id ASC",
       [id]
     );
     loanDetails.items = itemsRes.rows.map(item => {
@@ -322,11 +322,12 @@ const createLoan = async (req, res) => {
       const it = itemsList[i];
       const gWt = parseFloat(it.gross_weight || 0);
       const nWt = parseFloat(it.net_weight || gWt);
+      const itemVal = parseFloat(it.item_amount || it.item_value || 0);
       const itBuffer = getPhotoBufferForItem(i);
 
       const itemQuery = `
-        INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_image_data) 
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_value, item_image_data) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       `;
       await client.query(itemQuery, [
         newLoanId,
@@ -337,6 +338,7 @@ const createLoan = async (req, res) => {
         gWt,
         nWt,
         it.purity || '22K (916)',
+        itemVal,
         itBuffer
       ]);
     }
@@ -373,132 +375,147 @@ const updateLoan = async (req, res) => {
     pledge_date,
     due_date,
     appraised_value,
-    item_type,
-    description,
-    quality,
-    gross_weight,
-    net_weight,
-    purity
+    principal_amount
   } = req.body;
-
-  const newItemImageBuffer = req.file ? req.file.buffer : undefined;
-  const removeItemImage = req.body.removeItemImage === 'true';
 
   if (isNaN(loanId) || loanId <= 0) return res.status(400).json({ error: "Invalid ID." });
 
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    const currentDataQuery = `
-      SELECT l.*, pi.id AS item_id, pi.* 
-      FROM "loans" l 
-      LEFT JOIN "pledgeditems" pi ON l.id = pi.loan_id 
-      WHERE l.id = $1 FOR UPDATE OF l
-    `;
-    const currentResult = await client.query(currentDataQuery, [loanId]);
-    if (currentResult.rows.length === 0) {
+    const checkLoan = await client.query("SELECT * FROM Loans WHERE id = $1 FOR UPDATE", [loanId]);
+    if (checkLoan.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: "Not found." });
+      return res.status(404).json({ error: "Loan not found." });
     }
+    const oldLoan = checkLoan.rows[0];
 
-    const oldData = currentResult.rows[0];
-    if (req.user.role !== 'admin' && oldData.branch_id !== req.user.branchId) {
+    if (req.user.role !== 'admin' && oldLoan.branch_id !== req.user.branchId) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: "Access Denied." });
     }
 
-    const itemId = oldData.item_id;
-    const historyLogs = [];
-    const loanUpdateFields = [];
-    const loanUpdateValues = [];
-    const itemUpdateFields = [];
-    const itemUpdateValues = [];
+    // 1. Update Core Loan Fields
+    const updateLoanQuery = `
+      UPDATE Loans 
+      SET book_loan_number = COALESCE($1, book_loan_number),
+          interest_rate = COALESCE($2, interest_rate),
+          pledge_date = COALESCE($3, pledge_date),
+          due_date = COALESCE($4, due_date),
+          appraised_value = COALESCE($5, appraised_value),
+          principal_amount = COALESCE($6, principal_amount)
+      WHERE id = $7
+    `;
+    await client.query(updateLoanQuery, [
+      book_loan_number ? book_loan_number.trim() : null,
+      interest_rate ? parseFloat(interest_rate) : null,
+      pledge_date ? pledge_date : null,
+      due_date ? due_date : null,
+      appraised_value ? parseFloat(appraised_value) : null,
+      principal_amount ? parseFloat(principal_amount) : null,
+      loanId
+    ]);
 
-    const addUpdate = (table, field, newValue, oldValue, fieldsArray, valuesArray, logLabel = field) => {
-      if (newValue === undefined) return;
-      let dbValue = newValue === "" ? null : newValue;
-      let oldValCompare = oldValue;
-      let newValCompare = dbValue;
+    // 2. Handle Multi-Item Articles if provided
+    let itemsList = [];
+    if (req.body.items) {
+      try {
+        itemsList = typeof req.body.items === 'string' ? JSON.parse(req.body.items) : req.body.items;
+      } catch (e) {
+        itemsList = [];
+      }
+    }
 
-      if (['pledge_date', 'due_date'].includes(field)) {
-        if (oldValue) {
-          const d = new Date(oldValue);
-          oldValCompare = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        } else {
-          oldValCompare = null;
+    if (Array.isArray(itemsList) && itemsList.length > 0) {
+      // Fetch existing images to preserve them if no new file was uploaded
+      const existingItemsRes = await client.query("SELECT id, item_image_data FROM PledgedItems WHERE loan_id = $1", [loanId]);
+      const existingImagesMap = new Map();
+      existingItemsRes.rows.forEach(r => existingImagesMap.set(r.id, r.item_image_data));
+
+      // Remove old items for this loan
+      await client.query("DELETE FROM PledgedItems WHERE loan_id = $1", [loanId]);
+
+      for (let i = 0; i < itemsList.length; i++) {
+        const it = itemsList[i];
+        const gWt = parseFloat(it.gross_weight || 0);
+        const nWt = parseFloat(it.net_weight || gWt);
+        const itemVal = parseFloat(it.item_value || it.item_amount || 0);
+
+        // Check if a new file was uploaded for this item index
+        let itemPhotoBuffer = null;
+        if (req.files && Array.isArray(req.files)) {
+          const match = req.files.find(f => f.fieldname === `itemPhoto_${i}`);
+          if (match) itemPhotoBuffer = match.buffer;
         }
-        newValCompare = dbValue;
-      } else if (typeof oldValue === 'number' || !isNaN(parseFloat(oldValue))) {
-        if (oldValue !== null) oldValCompare = parseFloat(oldValue);
-        if (dbValue !== null) newValCompare = parseFloat(dbValue);
-      }
 
-      if (newValCompare !== oldValCompare) {
-        fieldsArray.push(`"${field}"`);
-        valuesArray.push(dbValue);
-        historyLogs.push({
-          loan_id: loanId,
-          field_changed: logLabel,
-          old_value: String(oldValue ?? 'null'),
-          new_value: String(dbValue ?? 'null'),
-          changed_by_username: username
-        });
-      }
-    };
+        // If no new photo, retain existing image if ID was passed
+        if (!itemPhotoBuffer && it.id && existingImagesMap.has(it.id)) {
+          itemPhotoBuffer = existingImagesMap.get(it.id);
+        }
 
-    addUpdate('loans', 'book_loan_number', book_loan_number, oldData.book_loan_number, loanUpdateFields, loanUpdateValues);
-    addUpdate('loans', 'interest_rate', interest_rate, oldData.interest_rate, loanUpdateFields, loanUpdateValues);
-    addUpdate('loans', 'pledge_date', pledge_date, oldData.pledge_date, loanUpdateFields, loanUpdateValues);
-    addUpdate('loans', 'due_date', due_date, oldData.due_date, loanUpdateFields, loanUpdateValues);
-    addUpdate('loans', 'appraised_value', appraised_value, oldData.appraised_value, loanUpdateFields, loanUpdateValues);
-
-    if (itemId) {
-      addUpdate('pledgeditems', 'item_type', item_type, oldData.item_type, itemUpdateFields, itemUpdateValues);
-      addUpdate('pledgeditems', 'description', description, oldData.description, itemUpdateFields, itemUpdateValues);
-      addUpdate('pledgeditems', 'quality', quality, oldData.quality, itemUpdateFields, itemUpdateValues);
-      addUpdate('pledgeditems', 'weight', gross_weight, oldData.weight, itemUpdateFields, itemUpdateValues, 'gross_weight (legacy)');
-      addUpdate('pledgeditems', 'gross_weight', gross_weight, oldData.gross_weight, itemUpdateFields, itemUpdateValues);
-      addUpdate('pledgeditems', 'net_weight', net_weight, oldData.net_weight, itemUpdateFields, itemUpdateValues);
-      addUpdate('pledgeditems', 'purity', purity, oldData.purity, itemUpdateFields, itemUpdateValues);
-
-      if (newItemImageBuffer !== undefined || removeItemImage) {
-        const finalImageValue = removeItemImage ? null : newItemImageBuffer;
-        itemUpdateFields.push(`"item_image_data"`);
-        itemUpdateValues.push(finalImageValue);
-        historyLogs.push({
-          loan_id: loanId,
-          field_changed: 'item_image',
-          old_value: oldData.item_image_data ? '[Image]' : '[None]',
-          new_value: finalImageValue ? '[New]' : '[Removed]',
-          changed_by_username: username
-        });
+        const insertItemQuery = `
+          INSERT INTO PledgedItems (
+            loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_value, item_image_data
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `;
+        await client.query(insertItemQuery, [
+          loanId,
+          it.item_type || 'Gold',
+          it.description || '',
+          it.quality || it.purity || 'Good',
+          gWt,
+          gWt,
+          nWt,
+          it.purity || '22K (916)',
+          itemVal,
+          itemPhotoBuffer
+        ]);
       }
     }
 
-    if (loanUpdateFields.length > 0) {
-      const setClause = loanUpdateFields.map((f, i) => `${f}=$${i + 1}`).join(', ');
-      loanUpdateValues.push(loanId);
-      await client.query(`UPDATE "loans" SET ${setClause} WHERE id=$${loanUpdateValues.length}`, loanUpdateValues);
-    }
-
-    if (itemUpdateFields.length > 0 && itemId) {
-      const setClause = itemUpdateFields.map((f, i) => `${f}=$${i + 1}`).join(', ');
-      itemUpdateValues.push(itemId);
-      await client.query(`UPDATE "pledgeditems" SET ${setClause} WHERE id=$${itemUpdateValues.length}`, itemUpdateValues);
-    }
-
-    if (historyLogs.length > 0) {
-      const q = `INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) VALUES ($1, $2, $3, $4, $5)`;
-      for (const log of historyLogs) {
-        await client.query(q, [log.loan_id, log.field_changed, log.old_value, log.new_value, log.changed_by_username]);
+    // 3. Handle Historical / Missed Transactions
+    let missedTxs = [];
+    if (req.body.missedTransactions) {
+      try {
+        missedTxs = typeof req.body.missedTransactions === 'string' ? JSON.parse(req.body.missedTransactions) : req.body.missedTransactions;
+      } catch (e) {
+        missedTxs = [];
       }
     }
+
+    if (Array.isArray(missedTxs) && missedTxs.length > 0) {
+      for (const tx of missedTxs) {
+        const txAmount = parseFloat(tx.amount_paid);
+        if (!isNaN(txAmount) && txAmount > 0) {
+          const txType = ['interest', 'principal', 'disbursement'].includes(tx.payment_type) ? tx.payment_type : 'interest';
+          const txDate = tx.payment_date || new Date().toISOString();
+
+          await client.query(
+            "INSERT INTO Transactions (loan_id, amount_paid, payment_type, payment_date, changed_by_username) VALUES ($1, $2, $3, $4, $5)",
+            [loanId, txAmount, txType, txDate, username]
+          );
+
+          if (txType === 'principal') {
+            await client.query("UPDATE Loans SET principal_amount = GREATEST(0, principal_amount - $1) WHERE id = $2", [txAmount, loanId]);
+          } else if (txType === 'disbursement') {
+            await client.query("UPDATE Loans SET principal_amount = principal_amount + $1 WHERE id = $2", [txAmount, loanId]);
+          }
+        }
+      }
+    }
+
+    // 4. Log History
+    await client.query(
+      "INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) VALUES ($1, 'edit_loan', 'Full Edit', $2, $3)",
+      [loanId, `Edited by ${username}`, username]
+    );
 
     await client.query('COMMIT');
-    res.json({ message: `Updated.` });
+    res.json({ message: "Loan updated successfully" });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).send("Error");
+    console.error("❌ Update Loan Error:", err);
+    res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }
