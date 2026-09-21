@@ -42,6 +42,7 @@ export default function CustomerDetailPage() {
         <span>Back to Customer Directory</span>
       </Link>
 
+      {/* Customer Header Card */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-2xs flex flex-col md:flex-row md:items-center md:justify-between gap-6">
         <div className="flex items-center space-x-4">
           {customer.customer_image_url ? (
@@ -82,6 +83,7 @@ export default function CustomerDetailPage() {
         </Link>
       </div>
 
+      {/* KYC and Nominee Details */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
           <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-2">
@@ -118,6 +120,7 @@ export default function CustomerDetailPage() {
         </div>
       </div>
 
+      {/* Loan History Table */}
       <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
         <h3 className="text-base font-bold text-slate-800">Loans History ({loans.length})</h3>
 
@@ -129,7 +132,7 @@ export default function CustomerDetailPage() {
               <thead className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                 <tr>
                   <th className="p-3">Book Loan #</th>
-                  <th className="p-3">Pledged Article</th>
+                  <th className="p-3">Pledged Articles</th>
                   <th className="p-3 text-right">Principal</th>
                   <th className="p-3">Pledge Date</th>
                   <th className="p-3">Due Date</th>
@@ -141,7 +144,23 @@ export default function CustomerDetailPage() {
                 {loans.map((l) => (
                   <tr key={l.loan_id} className="hover:bg-slate-50/80 transition">
                     <td className="p-3 font-bold text-amber-700">#{l.book_loan_number}</td>
-                    <td className="p-3">{l.description || "Gold Article"}</td>
+                    <td className="p-3">
+                      <div className="font-semibold text-slate-900">
+                        {l.items_count > 1 ? `${l.items_count} Articles: ${l.description}` : (l.description || "Pledged Article")}
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5 space-x-2">
+                        {parseFloat(l.gold_net_weight) > 0 && (
+                          <span className="text-amber-800 font-bold bg-amber-50 px-1.5 py-0.5 rounded">
+                            Au Net: {parseFloat(l.gold_net_weight).toFixed(3)} g
+                          </span>
+                        )}
+                        {parseFloat(l.silver_net_weight) > 0 && (
+                          <span className="text-slate-700 font-bold bg-slate-100 px-1.5 py-0.5 rounded">
+                            Ag Net: {parseFloat(l.silver_net_weight).toFixed(3)} g
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="p-3 text-right font-bold text-slate-900">
                       ₹{parseFloat(l.principal_amount).toLocaleString()}
                     </td>

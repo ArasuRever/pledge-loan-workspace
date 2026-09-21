@@ -11,7 +11,9 @@ import {
   Trash2, 
   History,
   Scale,
-  RotateCcw
+  RotateCcw,
+  Edit3,
+  Image as ImageIcon
 } from 'lucide-react';
 import AddPrincipalModal from '../components/AddPrincipalModal';
 import SettleLoanModal from '../components/SettleLoanModal';
@@ -19,6 +21,8 @@ import RenewLoanModal from '../components/RenewLoanModal';
 import ForfeitLoanModal from '../components/ForfeitLoanModal';
 import LoanHistoryModal from '../components/LoanHistoryModal';
 import PrintableInvoice from '../components/PrintableInvoice';
+import ImageViewerModal from '../components/ImageViewerModal';
+import EditLoanModal from '../components/EditLoanModal';
 
 export default function LoanDetailPage() {
   const { id } = useParams();
@@ -37,6 +41,8 @@ export default function LoanDetailPage() {
   const [isRenewOpen, setIsRenewOpen] = useState(false);
   const [isForfeitOpen, setIsForfeitOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isEditLoanOpen, setIsEditLoanOpen] = useState(false);
+  const [viewerImage, setViewerImage] = useState(null);
 
   const fetchLoanData = async () => {
     try {
@@ -107,6 +113,21 @@ export default function LoanDetailPage() {
   const { loanDetails, transactions, interestBreakdown, calculated } = data;
   const isClosed = ['paid', 'forfeited'].includes(loanDetails.status);
 
+  // Group items by metal to separate weights completely
+  const items = loanDetails.items || [];
+  const goldItems = items.filter(i => (i.item_type || '').toLowerCase().includes('gold'));
+  const silverItems = items.filter(i => (i.item_type || '').toLowerCase().includes('silver'));
+  const otherItems = items.filter(i => !(i.item_type || '').toLowerCase().includes('gold') && !(i.item_type || '').toLowerCase().includes('silver'));
+
+  const goldGross = goldItems.reduce((s, i) => s + parseFloat(i.gross_weight || 0), 0);
+  const goldNet = goldItems.reduce((s, i) => s + parseFloat(i.net_weight || i.gross_weight || 0), 0);
+
+  const silverGross = silverItems.reduce((s, i) => s + parseFloat(i.gross_weight || 0), 0);
+  const silverNet = silverItems.reduce((s, i) => s + parseFloat(i.net_weight || i.gross_weight || 0), 0);
+
+  const otherGross = otherItems.reduce((s, i) => s + parseFloat(i.gross_weight || 0), 0);
+  const otherNet = otherItems.reduce((s, i) => s + parseFloat(i.net_weight || i.gross_weight || 0), 0);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -116,9 +137,18 @@ export default function LoanDetailPage() {
         </Link>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* Edit Loan Button */}
+          <button
+            onClick={() => setIsEditLoanOpen(true)}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-xs"
+          >
+            <Edit3 className="w-3.5 h-3.5 text-amber-400" />
+            <span>Edit Loan</span>
+          </button>
+
           <button
             onClick={() => setIsHistoryOpen(true)}
-            className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition"
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer"
           >
             <History className="w-3.5 h-3.5" />
             <span>Audit History</span>
@@ -128,28 +158,28 @@ export default function LoanDetailPage() {
             <>
               <button
                 onClick={() => setIsAddPrincipalOpen(true)}
-                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition"
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer"
               >
                 <PlusCircle className="w-3.5 h-3.5 text-amber-600" />
                 <span>Add Principal</span>
               </button>
               <button
                 onClick={() => setIsRenewOpen(true)}
-                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl text-xs font-semibold transition"
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl text-xs font-semibold transition cursor-pointer"
               >
                 <RefreshCw className="w-3.5 h-3.5 text-amber-700" />
                 <span>Renew</span>
               </button>
               <button
                 onClick={() => setIsSettleOpen(true)}
-                className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-2xs transition"
+                className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-2xs transition cursor-pointer"
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Settle & Close</span>
               </button>
               <button
                 onClick={() => setIsForfeitOpen(true)}
-                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl text-xs font-semibold transition"
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl text-xs font-semibold transition cursor-pointer"
               >
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span>Forfeit</span>
@@ -159,7 +189,7 @@ export default function LoanDetailPage() {
             loanDetails.status === 'forfeited' && (
               <button
                 onClick={handleUndoForfeit}
-                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold transition shadow-xs"
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold transition shadow-xs cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>Undo Forfeiture</span>
@@ -219,17 +249,17 @@ export default function LoanDetailPage() {
       <div className="flex border-b border-slate-200 text-sm font-medium">
         <button
           onClick={() => setActiveTab('overview')}
-          className={`pb-3 px-4 border-b-2 transition ${
+          className={`pb-3 px-4 border-b-2 transition cursor-pointer ${
             activeTab === 'overview'
               ? 'border-amber-500 text-amber-600 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
-          Pledged Article & Overview
+          Pledged Articles & Overview
         </button>
         <button
           onClick={() => setActiveTab('transactions')}
-          className={`pb-3 px-4 border-b-2 transition ${
+          className={`pb-3 px-4 border-b-2 transition cursor-pointer ${
             activeTab === 'transactions'
               ? 'border-amber-500 text-amber-600 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -239,7 +269,7 @@ export default function LoanDetailPage() {
         </button>
         <button
           onClick={() => setActiveTab('breakdown')}
-          className={`pb-3 px-4 border-b-2 transition ${
+          className={`pb-3 px-4 border-b-2 transition cursor-pointer ${
             activeTab === 'breakdown'
               ? 'border-amber-500 text-amber-600 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -249,7 +279,7 @@ export default function LoanDetailPage() {
         </button>
         <button
           onClick={() => setActiveTab('print')}
-          className={`pb-3 px-4 border-b-2 transition ${
+          className={`pb-3 px-4 border-b-2 transition cursor-pointer ${
             activeTab === 'print'
               ? 'border-amber-500 text-amber-600 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -263,29 +293,131 @@ export default function LoanDetailPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
             <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
-              <h3 className="text-base font-bold text-slate-800">Article Specifications</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
-                <div className="p-3 bg-slate-50 rounded-xl">
-                  <p className="text-xs text-slate-400">Item</p>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5">{loanDetails.item_type || "Gold"}</p>
-                </div>
-                <div className="p-3 bg-slate-50 rounded-xl">
-                  <p className="text-xs text-slate-400">Purity</p>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5">{loanDetails.purity || "22K"}</p>
-                </div>
-                <div className="p-3 bg-slate-50 rounded-xl">
-                  <p className="text-xs text-slate-400">Gross Weight</p>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5">{loanDetails.gross_weight || loanDetails.weight || 0} g</p>
-                </div>
-                <div className="p-3 bg-slate-50 rounded-xl">
-                  <p className="text-xs text-slate-400">Net Weight</p>
-                  <p className="font-bold text-slate-900 text-sm mt-0.5">{loanDetails.net_weight || 0} g</p>
-                </div>
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-slate-800">
+                  Pledged Articles {items.length > 1 ? `(${items.length} Items)` : ''}
+                </h3>
+                {loanDetails.appraised_value > 0 && (
+                  <span className="text-xs text-slate-500">
+                    Appraised Value: <strong className="text-slate-900">₹{parseFloat(loanDetails.appraised_value).toLocaleString()}</strong>
+                  </span>
+                )}
               </div>
 
-              <div className="p-4 bg-slate-50 rounded-xl space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Description</p>
-                <p className="text-sm text-slate-800">{loanDetails.description || "No description provided."}</p>
+              {/* Multi-Item Pledged Articles Table with Photo next to Pledged Value */}
+              <div className="overflow-x-auto border border-slate-200 rounded-2xl shadow-2xs">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200">
+                    <tr>
+                      <th className="p-3">#</th>
+                      <th className="p-3">Metal</th>
+                      <th className="p-3">Description</th>
+                      <th className="p-3 text-right">Gross Wt</th>
+                      <th className="p-3 text-right">Net Wt</th>
+                      <th className="p-3">Purity</th>
+                      <th className="p-3 text-right">Pledged Value</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-800">
+                    {items.length > 0 ? (
+                      items.map((it, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50/80 transition">
+                          <td className="p-3 text-slate-400 font-bold">{idx + 1}</td>
+                          <td className="p-3 font-bold text-amber-800">{it.item_type || 'Gold'}</td>
+                          <td className="p-3 font-medium">{it.description || '-'}</td>
+                          <td className="p-3 text-right font-semibold">{parseFloat(it.gross_weight || 0).toFixed(3)} g</td>
+                          <td className="p-3 text-right font-bold text-slate-900">{parseFloat(it.net_weight || it.gross_weight || 0).toFixed(3)} g</td>
+                          <td className="p-3">{it.purity || '-'}</td>
+                          <td className="p-3 text-right">
+                            <div className="inline-flex items-center justify-end space-x-2">
+                              {it.item_image_data_url && (
+                                <img
+                                  src={it.item_image_data_url}
+                                  alt="Item"
+                                  onClick={() => setViewerImage({ src: it.item_image_data_url, title: `Article #${idx + 1} (${it.description || it.item_type})` })}
+                                  className="w-7 h-7 object-cover rounded-lg border border-slate-300 cursor-pointer hover:opacity-80 shadow-2xs"
+                                  title="Click to Zoom In/Out"
+                                />
+                              )}
+                              <span className="font-black text-slate-900 text-sm">
+                                {parseFloat(it.item_value || 0) > 0 ? `₹${parseFloat(it.item_value).toLocaleString()}` : '-'}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td className="p-3 text-slate-400 font-bold">1</td>
+                        <td className="p-3 font-bold text-amber-800">{loanDetails.item_type || 'Gold'}</td>
+                        <td className="p-3 font-medium">{loanDetails.description || '-'}</td>
+                        <td className="p-3 text-right font-semibold">{parseFloat(loanDetails.gross_weight || loanDetails.weight || 0).toFixed(3)} g</td>
+                        <td className="p-3 text-right font-bold text-slate-900">{parseFloat(loanDetails.net_weight || 0).toFixed(3)} g</td>
+                        <td className="p-3">{loanDetails.purity || '-'}</td>
+                        <td className="p-3 text-right font-black text-slate-900">₹{parseFloat(loanDetails.principal_amount || 0).toLocaleString()}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                  <tfoot className="bg-slate-50 font-semibold text-slate-800 border-t-2 border-slate-200 text-xs">
+                    {/* Row 1: Total Principal */}
+                    <tr className="bg-amber-50/80 font-black text-slate-900 border-b border-amber-200">
+                      <td colSpan={6} className="p-3 text-right uppercase tracking-wider text-[11px] text-amber-900 font-extrabold">
+                        Total Pledged Principal:
+                      </td>
+                      <td className="p-3 text-right text-sm text-amber-950 font-black">
+                        ₹{parseFloat(loanDetails.principal_amount || 0).toLocaleString()}
+                      </td>
+                    </tr>
+
+                    {/* Row 2: Gold Weights Separated */}
+                    {goldItems.length > 0 && (
+                      <tr className="bg-white text-amber-950 font-semibold border-b border-slate-100">
+                        <td colSpan={3} className="p-2.5 text-right font-bold">
+                          🟡 Gold Articles ({goldItems.length}):
+                        </td>
+                        <td className="p-2.5 text-right font-bold text-slate-900">
+                          Total Gold Gross: {goldGross.toFixed(3)} g
+                        </td>
+                        <td className="p-2.5 text-right font-black text-amber-900">
+                          Total Gold Net: {goldNet.toFixed(3)} g
+                        </td>
+                        <td colSpan={2}></td>
+                      </tr>
+                    )}
+
+                    {/* Row 3: Silver Weights Separated */}
+                    {silverItems.length > 0 && (
+                      <tr className="bg-white text-slate-900 font-semibold border-b border-slate-100">
+                        <td colSpan={3} className="p-2.5 text-right font-bold">
+                          ⚪ Silver Articles ({silverItems.length}):
+                        </td>
+                        <td className="p-2.5 text-right font-bold text-slate-900">
+                          Total Silver Gross: {silverGross.toFixed(3)} g
+                        </td>
+                        <td className="p-2.5 text-right font-black text-slate-950">
+                          Total Silver Net: {silverNet.toFixed(3)} g
+                        </td>
+                        <td colSpan={2}></td>
+                      </tr>
+                    )}
+
+                    {/* Row 4: Other Weights Separated (if any) */}
+                    {otherItems.length > 0 && (
+                      <tr className="bg-white text-blue-900 font-semibold">
+                        <td colSpan={3} className="p-2.5 text-right font-bold">
+                          🔵 Other Articles ({otherItems.length}):
+                        </td>
+                        <td className="p-2.5 text-right font-bold text-slate-900">
+                          Total Other Gross: {otherGross.toFixed(3)} g
+                        </td>
+                        <td className="p-2.5 text-right font-black text-blue-950">
+                          Total Other Net: {otherNet.toFixed(3)} g
+                        </td>
+                        <td colSpan={2}></td>
+                      </tr>
+                    )}
+                  </tfoot>
+                </table>
               </div>
             </div>
 
@@ -318,12 +450,13 @@ export default function LoanDetailPage() {
                       className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm"
                     >
                       <option value="interest">Interest (Auto-Split)</option>
-                      <option value="principal">Principal</option>
+                      <option value="principal">Principal Reduction</option>
+                      <option value="disbursement">Additional Disbursement</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">Backdate (Optional)</label>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Payment Date (Optional)</label>
                     <input
                       type="date"
                       value={customDate}
@@ -336,7 +469,7 @@ export default function LoanDetailPage() {
                     <button
                       type="submit"
                       disabled={paymentLoading}
-                      className="w-full py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl text-sm transition shadow-2xs disabled:opacity-50"
+                      className="w-full py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl text-sm transition shadow-2xs disabled:opacity-50 cursor-pointer"
                     >
                       {paymentLoading ? "Saving..." : "Record Payment"}
                     </button>
@@ -348,20 +481,57 @@ export default function LoanDetailPage() {
 
           <div className="space-y-4">
             <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
-              <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Article Image Proof</h3>
-              {loanDetails.item_image_data_url ? (
-                <div className="aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-100">
-                  <img
-                    src={loanDetails.item_image_data_url}
-                    alt="Pledged Item"
-                    className="w-full h-full object-cover"
-                  />
-                </div>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider">
+                  {items.length > 1 ? `Article Photos (${items.filter(i => i.item_image_data_url).length})` : 'Article Image Proof'}
+                </h3>
+                <span className="text-[10px] text-slate-400">Click to Zoom</span>
+              </div>
+
+              {items.length > 1 ? (
+                /* Multiple items image grid */
+                items.filter(i => i.item_image_data_url).length > 0 ? (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {items.map((it, idx) => it.item_image_data_url ? (
+                      <div 
+                        key={idx} 
+                        className="aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-50 relative group cursor-pointer"
+                        onClick={() => setViewerImage({ src: it.item_image_data_url, title: `Article #${idx + 1} (${it.description || it.item_type})` })}
+                      >
+                        <img src={it.item_image_data_url} alt="Article" className="w-full h-full object-cover group-hover:scale-105 transition" />
+                        <span className="absolute bottom-1.5 left-1.5 bg-slate-950/80 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">
+                          #{idx + 1}
+                        </span>
+                      </div>
+                    ) : null)}
+                  </div>
+                ) : (
+                  <div className="aspect-square rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-400 p-4 text-center text-xs">
+                    <ImageIcon className="w-8 h-8 mb-2 stroke-1 text-slate-300" />
+                    <span>No photos attached to articles.</span>
+                  </div>
+                )
               ) : (
-                <div className="aspect-square rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-400 p-4 text-center text-xs">
-                  <Scale className="w-8 h-8 mb-2 stroke-1" />
-                  <span>No photo attached to this loan.</span>
-                </div>
+                /* Single item image view */
+                loanDetails.item_image_data_url ? (
+                  <div className="aspect-square rounded-xl overflow-hidden border border-slate-200 bg-slate-100 group relative">
+                    <img
+                      src={loanDetails.item_image_data_url}
+                      alt="Pledged Item"
+                      onClick={() => setViewerImage({ src: loanDetails.item_image_data_url, title: `Loan #${loanDetails.book_loan_number || loanDetails.id} Pledged Article` })}
+                      className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition"
+                      title="Click to Zoom In/Out"
+                    />
+                    <span className="absolute bottom-2 right-2 bg-slate-900/80 text-white text-[10px] px-2 py-1 rounded-md pointer-events-none">
+                      Click to Zoom
+                    </span>
+                  </div>
+                ) : (
+                  <div className="aspect-square rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-400 p-4 text-center text-xs">
+                    <Scale className="w-8 h-8 mb-2 stroke-1" />
+                    <span>No photo attached to this loan.</span>
+                  </div>
+                )
               )}
             </div>
           </div>
@@ -409,7 +579,7 @@ export default function LoanDetailPage() {
                       <td className="p-3 text-right">
                         <button
                           onClick={() => handleDeleteTransaction(t.id)}
-                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded"
+                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
                           title="Undo Transaction"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -516,6 +686,22 @@ export default function LoanDetailPage() {
         onClose={() => setIsHistoryOpen(false)}
         loanId={loanDetails.id}
         bookLoanNumber={loanDetails.book_loan_number}
+      />
+
+      {/* Edit Loan Modal */}
+      <EditLoanModal
+        isOpen={isEditLoanOpen}
+        onClose={() => setIsEditLoanOpen(false)}
+        loan={loanDetails}
+        onSuccess={fetchLoanData}
+      />
+
+      {/* Click-to-Zoom Lightbox Modal */}
+      <ImageViewerModal
+        isOpen={!!viewerImage}
+        onClose={() => setViewerImage(null)}
+        src={viewerImage?.src}
+        title={viewerImage?.title}
       />
     </div>
   );

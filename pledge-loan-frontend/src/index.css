@@ -9,14 +9,36 @@
 }
 
 @media print {
+  /* Hide all navigation, sidebars, tabs, and buttons */
+  body * {
+    visibility: hidden !important;
+  }
+  
+  /* Show only the printable receipt voucher and its contents */
+  #printable-voucher,
+  #printable-voucher * {
+    visibility: visible !important;
+  }
+  
+  #printable-voucher {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 8mm !important;
+    background-color: #fff !important;
+    color: #000 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
   .no-print {
     display: none !important;
   }
-  .print-only {
-    display: block !important;
-  }
-  body {
-    background-color: #fff !important;
-    color: #000 !important;
+
+  /* Prevent page breaks inside table rows */
+  table, tr, td, th {
+    page-break-inside: avoid !important;
   }
 }

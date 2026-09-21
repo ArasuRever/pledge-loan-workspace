@@ -3,7 +3,6 @@ const { getTargetBranchId } = require('../middleware/auth.middleware');
 const { getScopedLoanQuery, calculateLoanFinancials } = require('../utils/calculation.engine');
 const { bufferToDataUrl } = require('../utils/image.utils');
 
-// --- 1. LIST ALL LOANS (Latest Created & Latest Closed in Order) ---
 const listLoans = async (req, res) => {
   try {
     const targetBranch = getTargetBranchId(req);
@@ -57,7 +56,6 @@ const listLoans = async (req, res) => {
   }
 };
 
-// --- 2. RECENTLY CREATED (Strict Latest Order) ---
 const getRecentCreated = async (req, res) => {
   try {
     let base = `
@@ -85,7 +83,6 @@ const getRecentCreated = async (req, res) => {
   }
 };
 
-// --- 3. RECENTLY CLOSED (Strict Latest Closed Order + Settled Value) ---
 const getRecentClosed = async (req, res) => {
   try {
     let base = `
@@ -197,7 +194,7 @@ const getLoanById = async (req, res) => {
 
     const financials = calculateLoanFinancials(loanDetails, transactionsResult.rows);
 
-    // Fetch all multi-item articles for this loan
+    // Fetch all multi-item articles for this loan including item_value
     const itemsRes = await db.query(
       "SELECT id, item_type, description, quality, gross_weight, net_weight, purity, COALESCE(item_value, 0) AS item_value, item_image_data FROM PledgedItems WHERE loan_id = $1 ORDER BY id ASC",
       [id]
@@ -234,8 +231,7 @@ const getLoanById = async (req, res) => {
       calculated: financials
     });
   } catch (err) {
-    console.error("Get Loan Details Error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).send("Error");
   }
 };
 
@@ -294,7 +290,8 @@ const createLoan = async (req, res) => {
         quality: quality || purity || 'Good',
         gross_weight: finalGross,
         net_weight: finalNet,
-        purity: purity || '22K (916)'
+        purity: purity || '22K (916)',
+        item_amount: principal
       }];
     }
 
@@ -322,9 +319,9 @@ const createLoan = async (req, res) => {
       const it = itemsList[i];
       const gWt = parseFloat(it.gross_weight || 0);
       const nWt = parseFloat(it.net_weight || gWt);
-      const itemVal = parseFloat(it.item_amount || it.item_value || 0);
       const itBuffer = getPhotoBufferForItem(i);
 
+      const itemVal = parseFloat(it.item_amount || it.item_value || 0);
       const itemQuery = `
         INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_value, item_image_data) 
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -353,8 +350,15 @@ const createLoan = async (req, res) => {
       }
     }
 
+    // Log creation audit record
+    await client.query(
+      `INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) 
+       VALUES ($1, 'creation', 'New Loan Created', $2, $3)`,
+      [newLoanId, `Book #${book_loan_number.trim()} created with principal ₹${principal}`, username]
+    );
+
     await client.query('COMMIT');
-    res.status(201).json({ message: "Loan created", loanId: newLoanId });
+    res.status(201).json({ message: "Loan created successfully", loanId: newLoanId });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error("❌ Create Loan Error:", err);
@@ -427,7 +431,7 @@ const updateLoan = async (req, res) => {
     }
 
     if (Array.isArray(itemsList) && itemsList.length > 0) {
-      // Fetch existing images to preserve them if no new file was uploaded
+      // Fetch existing images to preserve them if no new file is uploaded
       const existingItemsRes = await client.query("SELECT id, item_image_data FROM PledgedItems WHERE loan_id = $1", [loanId]);
       const existingImagesMap = new Map();
       existingItemsRes.rows.forEach(r => existingImagesMap.set(r.id, r.item_image_data));
@@ -495,6 +499,7 @@ const updateLoan = async (req, res) => {
             [loanId, txAmount, txType, txDate, username]
           );
 
+          // If principal payment or disbursement, adjust current loan principal
           if (txType === 'principal') {
             await client.query("UPDATE Loans SET principal_amount = GREATEST(0, principal_amount - $1) WHERE id = $2", [txAmount, loanId]);
           } else if (txType === 'disbursement') {
@@ -661,9 +666,9 @@ const renewLoan = async (req, res) => {
     const itemsRes = await client.query("SELECT * FROM PledgedItems WHERE loan_id = $1 ORDER BY id ASC", [oldLoanId]);
     for (const item of itemsRes.rows) {
       await client.query(
-        `INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_image_data) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [newLoanId, item.item_type, item.description, item.quality, item.weight, item.gross_weight, item.net_weight, item.purity, item.item_image_data]
+        `INSERT INTO PledgedItems (loan_id, item_type, description, quality, weight, gross_weight, net_weight, purity, item_value, item_image_data) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [newLoanId, item.item_type, item.description, item.quality, item.weight, item.gross_weight, item.net_weight, item.purity, item.item_value || 0, item.item_image_data]
       );
     }
 
@@ -677,6 +682,13 @@ const renewLoan = async (req, res) => {
         );
       }
     }
+
+    // Log creation audit record for the new renewed loan
+    await client.query(
+      `INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) 
+       VALUES ($1, 'creation', 'Renewed Loan Created', $2, $3)`,
+      [newLoanId, `Renewed from old loan #${oldLoan.book_loan_number} with principal ₹${finalNewPrincipal}`, username]
+    );
 
     await client.query('COMMIT');
     res.json({ message: "Loan renewed successfully", newLoanId });
@@ -702,6 +714,7 @@ const forfeitLoan = async (req, res) => {
 
     await client.query('BEGIN');
 
+    // 1. Validate Loan
     const loanRes = await client.query("SELECT * FROM Loans WHERE id = $1 FOR UPDATE", [loanId]);
     if (loanRes.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -718,6 +731,7 @@ const forfeitLoan = async (req, res) => {
       return res.status(400).json({ error: "Loan is not active." });
     }
 
+    // 2. Record the 'Sale' as a transaction
     if (finalSalePrice > 0) {
       await client.query(
         "INSERT INTO Transactions (loan_id, amount_paid, payment_type, payment_date, changed_by_username) VALUES ($1, $2, 'sale', NOW(), $3)",
@@ -725,6 +739,7 @@ const forfeitLoan = async (req, res) => {
       );
     }
 
+    // 3. Update Loan Status and Save Proofs
     await client.query(
       `UPDATE Loans 
        SET status = 'forfeited', 
@@ -736,6 +751,7 @@ const forfeitLoan = async (req, res) => {
       [finalSalePrice, signatureBuffer, photoBuffer, loanId]
     );
 
+    // 4. Log History
     await client.query(
       "INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) VALUES ($1, 'status', $2, 'forfeited', $3)",
       [loanId, loan.status, username]
@@ -775,10 +791,12 @@ const undoForfeit = async (req, res) => {
       return res.status(400).json({ error: "Loan is not in forfeited state." });
     }
 
+    // 1. Calculate New Status
     const dueDate = new Date(loan.due_date);
     const now = new Date();
     const newStatus = now > dueDate ? 'overdue' : 'active';
 
+    // 2. Reset Loan Fields
     await client.query(
       `UPDATE Loans 
        SET status = $1, 
@@ -790,8 +808,10 @@ const undoForfeit = async (req, res) => {
       [newStatus, loanId]
     );
 
+    // 3. Delete 'sale' transaction
     await client.query("DELETE FROM Transactions WHERE loan_id = $1 AND payment_type = 'sale'", [loanId]);
 
+    // 4. Audit Log
     await client.query(
       "INSERT INTO loan_history (loan_id, field_changed, old_value, new_value, changed_by_username) VALUES ($1, 'status', 'forfeited', $2, $3)",
       [loanId, newStatus, req.user.username]
@@ -841,7 +861,9 @@ const settleLoan = async (req, res) => {
       let interestPart = 0;
       let principalPart = 0;
 
+      // Deduct discount from interest owed first
       const netInterestOwed = Math.max(0, outstandingInterest - discount);
+
       if (netInterestOwed > 0) {
         if (finalPayment >= netInterestOwed) {
           interestPart = netInterestOwed;
